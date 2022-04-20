@@ -1,0 +1,276 @@
+---
+title: "Homework 3"
+author: "Olivia Quinn"
+date: "4/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+Packages
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(readr)
+library(corrr)
+library(discrim)
+library(poissonreg)
+library(klaR)
+tidymodels_prefer()
+```
+
+Load and Tidy Data  
+```{r}
+titanic <- read_csv("data/titanic.csv")
+
+titanic$survived <- factor(titanic$survived, levels = c('Yes', 'No'))
+titanic$pclass <- factor(titanic$pclass)
+```
+
+### Question 1
+
+It is a good idea to use stratified sampling because it ensures that the group that survived and the group that did not receive proper representation in our training and testing data sets. Many more people did not survive than did survive.
+
+Potential issues: Quite a bit of missing data, mostly on passenger age and cabin. 
+
+```{r}
+set.seed(24)
+
+titanic %>% 
+  count(survived)
+
+titanic_split <- initial_split(titanic, prop = 0.70,
+                                strata = survived)
+titanic_train <- training(titanic_split)
+titanic_test <- testing(titanic_split)
+
+titanic_train %>% 
+  summarise(count = sum(is.na(titanic_train)))
+
+```
+
+### Question 2
+
+A bar plot of the outcome variable 'survived' reveals that the majority of passengers aboard the Titanic did not survive.
+
+```{r}
+ggplot(titanic_train, aes(survived)) + 
+  geom_bar() +
+  labs(title= "Histogram of Survival")
+```
+
+
+### Question 3
+
+Number of parents and children aboard is positively associated with number of siblings and spouses aboard and with passenger fare. Age is negatively correlated with both number of siblings and spouses aboard and number of parents and children aboard. Fare is weakly positively associated with number of parents and children aboard.
+
+```{r}
+cor_titanic <- correlate(titanic_train[, sapply(titanic_train, is.numeric)], use = "complete.obs")
+rplot(cor_titanic)
+```
+
+
+### Question 4
+
+Recipe. 
+```{r}
+titanic_recipe <- recipe(survived ~ pclass + sex + age + sib_sp + parch + 
+                           fare, data = titanic_train) %>% 
+  step_impute_linear(age, impute_with = imp_vars(all_predictors())) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact(terms = ~ fare:starts_with("sex")) %>%
+  step_interact(terms = ~ fare:age)
+  
+summary(titanic_recipe)
+```
+
+
+### Question 5
+
+Logistic regression model + workflow + fit to training data.
+
+```{r}
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wkflow <- workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(titanic_recipe)
+
+log_fit <- fit(log_wkflow, titanic_train)
+```
+
+
+### Question 6
+
+Linear discriminant analysis model + workflow + fit to training data.
+
+```{r}
+lda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+lda_wkflow <- workflow() %>% 
+  add_model(lda_mod) %>% 
+  add_recipe(titanic_recipe)
+
+lda_fit <- fit(lda_wkflow, titanic_train)
+```
+
+
+### Question 7
+
+Quadratic discriminant analysis model + workflow + fit to training data. 
+
+```{r}
+qda_mod <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+qda_wkflow <- workflow() %>% 
+  add_model(qda_mod) %>% 
+  add_recipe(titanic_recipe)
+
+qda_fit <- fit(qda_wkflow, titanic_train)
+```
+
+
+### Question 8
+
+Naive Bayes model + workflow + fit to training data.
+
+```{r}
+nb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+nb_wkflow <- workflow() %>% 
+  add_model(nb_mod) %>% 
+  add_recipe(titanic_recipe)
+
+nb_fit <- fit(nb_wkflow, titanic_train)
+```
+
+### Question 9
+
+Predictions + Accuracies for all 4 models. 
+
+```{r}
+log_predict <- predict(log_fit, new_data = titanic_train, type = "class")
+lda_predict <- predict(lda_fit, new_data = titanic_train, type = "class")
+qda_predict <- predict(qda_fit, new_data = titanic_train, type = "class")
+nb_predict <- predict(nb_fit, new_data = titanic_train, type = "class")
+
+compare_predict <- bind_cols(log_predict, lda_predict, qda_predict, nb_predict, titanic_train$survived)
+
+log_reg_acc <- augment(log_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+
+lda_acc <- augment(lda_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+
+qda_acc <- augment(qda_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+
+nb_acc <- augment(nb_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+```
+
+The logistic regression model achieved the highest accuracy on the training data (0.82).
+
+```{r}
+accuracies <- c(log_reg_acc$.estimate, lda_acc$.estimate, 
+                nb_acc$.estimate, qda_acc$.estimate)
+models <- c("Logistic Regression", "LDA", "Naive Bayes", "QDA")
+results <- tibble(accuracies = accuracies, models = models)
+results %>% 
+  arrange(-accuracies)
+```
+
+
+### Question 10
+
+Fitting the logistic regression model to the testing data. 
+```{r}
+predict(log_fit, new_data = titanic_test, type = "class")
+```
+The testing accuracy of the logistic regression model rounds up to 0.81. The training accuracy of the same model rounds up to 0.82. The model performs fairly well with nearly identical training and testing accuracies. 
+
+```{r}
+multi_metric <- metric_set(accuracy, sensitivity, specificity)
+
+augment(log_fit, new_data = titanic_test) %>%
+  multi_metric(truth = survived, estimate = .pred_class)
+```
+
+Confusion Matrix.
+```{r}
+augment(log_fit, new_data = titanic_test) %>%
+  conf_mat(truth = survived, estimate = .pred_class)
+```
+
+ROC curve.
+```{r}
+augment(log_fit, new_data = titanic_test) %>%
+  roc_curve(survived, .pred_Yes) %>%
+  autoplot()
+```
+
+Area Under the Curve = 0.83
+```{r}
+augment(log_fit, new_data = titanic_test) %>%
+  roc_auc(survived, .pred_Yes)
+```
+
+
+### 231 Questions
+
+In a binary classification problem, let $p$ represent the probability of class label $1$, which implies that $1 - p$ represents the probability of class label $0$. The *logistic function* (also called the "inverse logit") is the cumulative distribution function of the logistic distribution, which maps a real number *z* to the open interval $(0, 1)$.
+
+### Question 11
+
+The *logit* function...
+
+$$
+z(p)=ln\left(\frac{p}{1-p}\right)
+$$
+...is equivalent to:
+$$
+e^z = \left(\frac{p}{1-p}\right)
+\\  
+e^z(1-p) = p
+\\  
+e^z - (p)(e^z) = p 
+\\  
+e^z = p + (p)(e^z)
+\\  
+e^z = p(1+e^z)
+\\  
+p = \left(\frac{e^z}{1+e^z}\right)
+$$
+
+### Question 12
+
+#### Assume that $z = \beta_0 + \beta_{1}x_{1}$ and $p = logistic(z)$. How do the odds of the outcome change if you increase $x_{1}$ by two? Demonstrate this.
+
+Under the simple logistic regression model of: 
+
+$$
+ln\left(\frac{p}{1-p}\right) = \beta_0 + \beta_{1}x_{1}
+$$
+This means that when $x=0$, the log odds are equal to $\beta_0$.
+
+Also, this means that for every one unit increase in $x$ the log odds increases by $\beta_1$. A *two* unit increase in $x$ results in an increase to the log odds of $2\beta_1$.
+
+Additionally, given that $odds = e^{\beta_0 + \beta_1x}$, which is equivalent to $odds = e^{\beta_0} * e^{\beta_1x}$... a one unit increase (from 0 to 1) in x results in multiplying the odds by $e^{\beta_1}$. A two unit increase (from 0 to 2) results in multiplying the odds by $e^{2\beta_1}$.
+
+
+#### Assume now that $\beta_1$ is negative. What value does $p$ approach as $x_{1}$ approaches $\infty$? What value does $p$ approach as $x_{1}$ approaches $-\infty$?
+
+If $\beta_1$ is negative, $p$ approaches 0 as $x_{1}$ approaches $\infty$ and $p$ approaches 1 as $x_{1}$ approaches $-\infty$.
+
